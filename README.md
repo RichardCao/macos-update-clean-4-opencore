@@ -1,79 +1,55 @@
 # macos-update-clean-4-opencore
 
-一组围绕 macOS 软件更新链路的脚本，目标是：
+Shell scripts to:
 
-- 尽量彻底关闭 Apple 原生更新检查、下载和通知
-- 清理会影响 OpenCore Legacy Patcher Post-Install Root Patch 的本地更新污染
-- 用只读脚本验证当前系统是否仍存在更新残留
-- 在需要时撤销上述修改，恢复系统更新能力
+- disable Apple-native macOS update checks, downloads, and user-facing notifications
+- clean local update metadata that can interfere with OpenCore Legacy Patcher post-install patching
+- verify whether the machine is still carrying update residue
+- restore the Apple-native update chain if needed later
 
-## 适用范围
+This repo exists for a narrow use case: keep a Mac stable on its current macOS build, reduce update-related state being written back locally, and prepare a cleaner environment for OpenCore Legacy Patcher root patching.
 
-- 脚本没有把 `15.7.4` 或某个固定 build 写死到执行逻辑里
-- 清理脚本和检查脚本会动态读取当前系统的 `ProductVersion` / `BuildVersion`，然后把“本机当前版本”作为干净基线
-- 目前是按 `macOS 15.7.4 (24G517)` 的实际环境验证和迭代出来的，尤其针对这套 Apple Software Update 路径、`launchd` 标签以及 OCLP staged-update watcher
-- 对同一代或相邻版本、且仍保留相同路径和服务标签的系统，通常也可以用
-- 如果未来 macOS 大版本改了 `launchd` 标签、`AssetsV2` 路径、`Software Update` 偏好键名，脚本就需要再调整
+## What This Repo Does
 
-## 脚本
+`disable_macos_updates.sh`
 
-### `disable_macos_updates.sh`
+- turns off scheduled `softwareupdate` checks
+- disables update-related system and user `launchd` jobs
+- writes a managed update-domain blocklist into `/etc/hosts`
+- clears user-facing Software Update notification state where possible
 
-用途：
+`clean_oclp_update_pollution.sh`
 
-- 关闭 `softwareupdate` 定时检查
-- 关闭系统级和用户级更新相关 `launchd` job
-- 在 `/etc/hosts` 中写入一段受控的更新域名 blocklist
-- 清理 Apple 原生更新提醒和 `System Settings`/`Software Update` 相关的用户级提示
+- disables the OCLP staged-update watchers tied to `Preflight.plist` and `Update.plist`
+- removes cached update metadata from `/Library/Updates` and `AssetsV2`
+- clears Software Update recommendation and notification residue
+- freezes several key cache directories with `uchg` so the same metadata is harder to recreate
 
-说明：
+`check_oclp_update_cleanliness.sh`
 
-- 这是“阻断更新链路”的脚本，不负责 OCLP 专用缓存清理
-- 会重启 `Dock`、`NotificationCenter`、`System Settings` 等进程来刷新 UI
+- performs a read-only validation pass
+- checks for staged update files
+- checks for version/build metadata that does not match the current system
+- checks whether Apple update jobs and OCLP staged-update watchers are still disabled
+- checks whether the key cache directories are frozen
 
-### `clean_oclp_update_pollution.sh`
+`restore_macos_updates.sh`
 
-用途：
+- re-enables Apple-native update services
+- removes the managed `/etc/hosts` block
+- removes the `uchg` freeze from the hardened cache directories
 
-- 停掉 OCLP 中直接盯 `Preflight.plist` / `Update.plist` 的 watcher
-- 清理 `/Library/Updates` 和 `AssetsV2` 里的更新元数据
-- 清理系统级和用户级 `SoftwareUpdate` 相关缓存和提示
-- 将几个关键目录设为 `uchg`，降低污染文件再次生成的概率
+## Verified Scope
 
-说明：
+- The scripts do not hardcode `15.7.4` or a single fixed build into the main execution flow.
+- The cleanup and validation scripts read the current system `ProductVersion` and `BuildVersion` dynamically, then treat that as the clean baseline.
+- The current behavior was validated on `macOS 15.7.4 (24G517)`.
+- They are most likely to keep working on nearby macOS versions that still use the same Apple Software Update paths, plist keys, and `launchd` labels.
+- If Apple changes those paths or labels in a future macOS release, the scripts will need adjustment.
 
-- 这是“清理 + 硬化”脚本，面向 OCLP `Post-Install Root Patch`
-- 不会动 OCLP 的 `auto-patch` 背景进程
+## Quick Start
 
-### `check_oclp_update_cleanliness.sh`
-
-用途：
-
-- 只读检查当前系统里是否还留有更新污染
-- 检查 Apple 原生更新链和 OCLP watcher 是否仍处于启用状态
-- 检查关键缓存目录是否已经被冻结
-
-说明：
-
-- 不会改系统
-- 用于执行清理后做验收
-
-### `restore_macos_updates.sh`
-
-用途：
-
-- 重新启用 Apple 原生更新链
-- 移除 `/etc/hosts` 里由脚本管理的 blocklist
-- 解除 `uchg` 冻结
-
-说明：
-
-- 这是“尽量恢复”为正常更新状态的脚本
-- 不会恢复你手动清掉的缓存文件内容，只会解除阻断和硬化措施
-
-## 典型流程
-
-### 禁用并清理
+Run the full disable + cleanup + validation flow:
 
 ```bash
 sudo zsh ./disable_macos_updates.sh
@@ -81,14 +57,57 @@ sudo zsh ./clean_oclp_update_pollution.sh
 zsh ./check_oclp_update_cleanliness.sh
 ```
 
-### 恢复
+If the checker reports clean state, proceed with your OpenCore Legacy Patcher post-install work.
+
+To restore normal Apple update behavior later:
 
 ```bash
 sudo zsh ./restore_macos_updates.sh
 ```
 
-## 风险提示
+## Dry Run
 
-- 这些脚本会改 `launchctl` 状态、`/etc/hosts`、`/Library/Updates`、`AssetsV2` 目录标志
-- 如果你以后还想正常使用 macOS 更新，建议执行恢复脚本
-- `System Settings` 侧栏里的红底数字可能是 UI 缓存残留；只要验收脚本全绿，一般不会再影响 OCLP patching
+The mutating scripts support `--dry-run`:
+
+```bash
+sudo zsh ./disable_macos_updates.sh --dry-run
+sudo zsh ./clean_oclp_update_pollution.sh --dry-run
+sudo zsh ./restore_macos_updates.sh --dry-run
+```
+
+The checker is already read-only, so `--dry-run` there is informational only:
+
+```bash
+zsh ./check_oclp_update_cleanliness.sh --dry-run
+```
+
+## Example Workflow
+
+Example for a machine that should stay on the current build and be prepared for OpenCore patching:
+
+```bash
+git clone https://github.com/RichardCao/macos-update-clean-4-opencore.git
+cd macos-update-clean-4-opencore
+sudo zsh ./disable_macos_updates.sh
+sudo zsh ./clean_oclp_update_pollution.sh
+zsh ./check_oclp_update_cleanliness.sh
+```
+
+Expected outcome:
+
+- Apple-native update agents are disabled
+- common update metadata files are removed
+- key update cache directories are frozen with `uchg`
+- the checker reports no obvious update pollution blocking OCLP post-install root patching
+
+## Notes
+
+- These scripts are intentionally aggressive. They modify `launchctl` state, `/etc/hosts`, update-related plist state, and filesystem flags.
+- The hosts blocklist is a defense-in-depth layer, not the primary control.
+- The `uchg` freeze is also a hardening layer, not a guarantee against every future Apple behavior change.
+- `System Settings` can keep a Software Update badge even after the real update state is gone. If the checker is clean, that badge is usually UI residue rather than active update pollution.
+- `restore_macos_updates.sh` restores service paths and writeability, but it does not reconstruct update cache files that were intentionally deleted earlier.
+
+## License
+
+MIT. See [LICENSE](./LICENSE).
