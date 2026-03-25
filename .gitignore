@@ -1,0 +1,12 @@
+.DS_Store
+._*
+
+.vscode/
+.idea/
+
+*.swp
+*.swo
+*~
+
+*.codex-backup.*
+*.codex-restore-backup.*
